@@ -24,8 +24,10 @@ WebInspector.ScreencastApp.prototype = {
     presentUI: function(document)
     {
         var rootView = new WebInspector.RootView();
+        var defaultWidth = document.body.clientWidth-500;
+        if(defaultWidth < 300)defaultWidth = 300;
 
-        this._rootSplitWidget = new WebInspector.SplitWidget(false, true, "InspectorView.screencastSplitViewState", 300, 300);
+        this._rootSplitWidget = new WebInspector.SplitWidget(false, true, "InspectorView.screencastSplitViewState", defaultWidth, 300);
         this._rootSplitWidget.setVertical(true);
         this._rootSplitWidget.setSecondIsSidebar(true);
         this._rootSplitWidget.show(rootView.element);

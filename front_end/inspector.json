@@ -34,7 +34,7 @@
         { "name": "accessibility", "condition": "!v8only" },
         { "name": "animation", "condition": "!v8only" },
         { "name": "es_tree" },
-        { "name": "screencast", "condition": "remoteFrontend", "type": "remote" },
+        { "name": "screencast", "type": "remote" },
         { "name": "emulated_devices", "condition": "!v8only" , "type": "remote" }
     ],
 
