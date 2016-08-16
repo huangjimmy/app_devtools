@@ -31,26 +31,15 @@
 /**
  * @constructor
  * @implements {InspectorAgent.Dispatcher}
- * @implements {WebInspector.Console.UIDelegate}
  * @suppressGlobalPropertiesCheck
  */
 WebInspector.Main = function()
 {
-    WebInspector.console.setUIDelegate(this);
     WebInspector.Main._instanceForTest = this;
     runOnWindowLoad(this._loaded.bind(this));
 }
 
 WebInspector.Main.prototype = {
-    /**
-     * @override
-     * @return {!Promise.<undefined>}
-     */
-    showConsole: function()
-    {
-        return WebInspector.Revealer.revealPromise(WebInspector.console);
-    },
-
     _loaded: function()
     {
         console.timeStamp("Main._loaded");
@@ -77,18 +66,6 @@ WebInspector.Main.prototype = {
      */
     _createSettings: function(prefs)
     {
-        // Patch settings from the URL param (for tests).
-        var settingsParam = Runtime.queryParam("settings");
-        if (settingsParam) {
-            try {
-                var settings = JSON.parse(window.decodeURI(settingsParam));
-                for (var key in settings)
-                    prefs[key] = settings[key];
-            } catch (e) {
-                // Ignore malformed settings.
-            }
-        }
-
         this._initializeExperiments(prefs);
         WebInspector.settings = new WebInspector.Settings(new WebInspector.SettingsStorage(prefs,
             InspectorFrontendHost.setPreference, InspectorFrontendHost.removePreference, InspectorFrontendHost.clearPreferences));
@@ -119,7 +96,6 @@ WebInspector.Main.prototype = {
         Runtime.experiments.register("resolveVariableNames", "Resolve variable names");
         Runtime.experiments.register("timelineShowAllEvents", "Show all events on Timeline", true);
         Runtime.experiments.register("securityPanel", "Security panel");
-        Runtime.experiments.register("sourceColorPicker", "Source color picker");
         Runtime.experiments.register("sourceDiff", "Source diff");
         Runtime.experiments.register("timelineFlowEvents", "Timeline flow events", true);
         Runtime.experiments.register("timelineInvalidationTracking", "Timeline invalidation tracking", true);
@@ -137,6 +113,8 @@ WebInspector.Main.prototype = {
                 Runtime.experiments.enableForTest("layersPanel");
             if (testPath.indexOf("security/") !== -1)
                 Runtime.experiments.enableForTest("securityPanel");
+            if (testPath.indexOf("accessibility/") !== -1)
+                Runtime.experiments.enableForTest("accessibilityInspection");
         }
 
         Runtime.experiments.setDefaultExperiments([
@@ -153,6 +131,8 @@ WebInspector.Main.prototype = {
     {
         console.timeStamp("Main._createApp");
 
+        WebInspector.viewManager = new WebInspector.ViewManager();
+
         // Request filesystems early, we won't create connections until callback is fired. Things will happen in parallel.
         WebInspector.isolatedFileSystemManager = new WebInspector.IsolatedFileSystemManager();
         WebInspector.isolatedFileSystemManager.initialize(this._didInitializeFileSystemManager.bind(this));
@@ -167,7 +147,7 @@ WebInspector.Main.prototype = {
 
         var canDock = !!Runtime.queryParam("can_dock");
         WebInspector.zoomManager = new WebInspector.ZoomManager(window, InspectorFrontendHost);
-        WebInspector.inspectorView = new WebInspector.InspectorView();
+        WebInspector.inspectorView = WebInspector.InspectorView.instance();
         WebInspector.ContextMenu.initialize();
         WebInspector.ContextMenu.installHandler(document);
         WebInspector.Tooltip.installHandler(document);
@@ -220,8 +200,7 @@ WebInspector.Main.prototype = {
         this._registerForwardedShortcuts();
         this._registerMessageSinkListener();
 
-        var appExtension = self.runtime.extensions(WebInspector.AppProvider)[0];
-        appExtension.instancePromise().then(this._showAppUI.bind(this));
+        self.runtime.extension(WebInspector.AppProvider).instance().then(this._showAppUI.bind(this));
     },
 
     /**
@@ -247,7 +226,7 @@ WebInspector.Main.prototype = {
         for (var extension of extensions) {
             var value = Runtime.queryParam(extension.descriptor()["name"]);
             if (value !== null)
-                extension.instancePromise().then(handleQueryParam.bind(null, value));
+                extension.instance().then(handleQueryParam.bind(null, value));
         }
 
         /**
@@ -850,13 +829,15 @@ WebInspector.Main.MainMenuItem.prototype = {
             contextMenu.discard();
         }
 
-        contextMenu.appendAction("main.toggle-drawer", WebInspector.inspectorView.drawerVisible() ? WebInspector.UIString("Hide console") : WebInspector.UIString("Show console"));
+        contextMenu.appendAction("main.toggle-drawer", WebInspector.inspectorView.drawerVisible() ? WebInspector.UIString("Hide console drawer") : WebInspector.UIString("Show console drawer"));
         contextMenu.appendItemsAtLocation("mainMenu");
         var moreTools = contextMenu.namedSubMenu("mainMenuMoreTools");
-        var extensions = self.runtime.extensions("drawer-view", undefined, true);
+        var extensions = self.runtime.extensions("view", undefined, true);
         for (var extension of extensions) {
             var descriptor = extension.descriptor();
-            moreTools.appendItem(extension.title(), WebInspector.inspectorView.showViewInDrawer.bind(WebInspector.inspectorView, descriptor["name"]));
+            if (descriptor["location"] !== "drawer-view")
+                continue;
+            moreTools.appendItem(extension.title(), WebInspector.viewManager.showView.bind(WebInspector.viewManager, descriptor["id"]));
         }
 
         contextMenu.show();
@@ -1116,6 +1097,5 @@ WebInspector.ShowMetricsRulersSettingUI.prototype = {
         return WebInspector.SettingsUI.createSettingCheckbox(WebInspector.UIString("Show rulers"), WebInspector.moduleSetting("showMetricsRulers"));
     }
 }
-
 
 new WebInspector.Main();

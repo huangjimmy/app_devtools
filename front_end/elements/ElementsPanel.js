@@ -32,6 +32,7 @@
  * @constructor
  * @implements {WebInspector.Searchable}
  * @implements {WebInspector.TargetManager.Observer}
+ * @implements {WebInspector.ViewLocationResolver}
  * @extends {WebInspector.Panel}
  */
 WebInspector.ElementsPanel = function()
@@ -66,23 +67,16 @@ WebInspector.ElementsPanel = function()
     this._breadcrumbs.show(crumbsContainer);
     this._breadcrumbs.addEventListener(WebInspector.ElementsBreadcrumbs.Events.NodeSelected, this._crumbNodeSelected, this);
 
-    this.sidebarPanes = {};
-    /** @type !Array<!WebInspector.View> */
-    this._elementsSidebarViews = [];
     this._currentToolbarPane = null;
 
-    this.sidebarPanes.styles = new WebInspector.StylesSidebarPane();
-    this.sidebarPanes.computedStyle = new WebInspector.ComputedStyleWidget();
-    this.sidebarPanes.metrics = new WebInspector.MetricsSidebarPane();
-    this.sidebarPanes.properties = new WebInspector.PropertiesWidget();
-    this.sidebarPanes.domBreakpoints = WebInspector.domBreakpointsSidebarPane.createProxy(this);
-    this.sidebarPanes.eventListeners = new WebInspector.EventListenersWidget();
+    this._stylesWidget = new WebInspector.StylesSidebarPane();
+    this._computedStyleWidget = new WebInspector.ComputedStyleWidget();
+    this._metricsWidget = new WebInspector.MetricsSidebarPane();
 
-    this._stylesSidebarToolbar = this._createStylesSidebarToolbar(this.sidebarPanes.styles);
+    this._stylesSidebarToolbar = this._createStylesSidebarToolbar();
 
     WebInspector.moduleSetting("sidebarPosition").addChangeListener(this._updateSidebarPosition.bind(this));
     this._updateSidebarPosition();
-    this._loadSidebarViews();
 
     /** @type {!Array.<!WebInspector.ElementsTreeOutline>} */
     this._treeOutlines = [];
@@ -100,22 +94,20 @@ WebInspector.ElementsPanel.prototype = {
      */
     _revealProperty: function(cssProperty)
     {
-        var stylesSidebarPane = this.sidebarPanes.styles;
-        this.sidebarPaneView.selectTab(WebInspector.UIString("Styles"));
-        stylesSidebarPane.revealProperty(/** @type {!WebInspector.CSSProperty} */(cssProperty));
-        return Promise.resolve();
+        return this.sidebarPaneView.showView(this._stylesViewToReveal).then(() => {
+            this._stylesWidget.revealProperty(/** @type {!WebInspector.CSSProperty} */(cssProperty));
+        });
     },
 
     /**
-     * @param {!WebInspector.StylesSidebarPane} ssp
      * @return {!Element}
      */
-    _createStylesSidebarToolbar: function(ssp)
+    _createStylesSidebarToolbar: function()
     {
         var container = createElementWithClass("div", "styles-sidebar-pane-toolbar-container");
         var hbox = container.createChild("div", "hbox styles-sidebar-pane-toolbar");
         var filterContainerElement = hbox.createChild("div", "styles-sidebar-pane-filter-box");
-        var filterInput = WebInspector.StylesSidebarPane.createPropertyFilterElement(WebInspector.UIString("Filter"), hbox, ssp.onFilterChanged.bind(ssp));
+        var filterInput = WebInspector.StylesSidebarPane.createPropertyFilterElement(WebInspector.UIString("Filter"), hbox, this._stylesWidget.onFilterChanged.bind(this._stylesWidget));
         filterContainerElement.appendChild(filterInput);
         var toolbar = new WebInspector.ExtensibleToolbar("styles-sidebarpane-toolbar", hbox);
         toolbar.element.classList.add("styles-pane-toolbar");
@@ -124,6 +116,16 @@ WebInspector.ElementsPanel.prototype = {
         this._toolbarPaneElement = createElementWithClass("div", "styles-sidebar-toolbar-pane");
         toolbarPaneContainer.appendChild(this._toolbarPaneElement);
         return container;
+    },
+
+    /**
+     * @override
+     * @param {string} locationName
+     * @return {?WebInspector.ViewLocation}
+     */
+    resolveLocation: function(locationName)
+    {
+        return this.sidebarPaneView;
     },
 
     /**
@@ -197,34 +199,6 @@ WebInspector.ElementsPanel.prototype = {
         }
     },
 
-    _loadSidebarViews: function()
-    {
-        var extensions = self.runtime.extensions("@WebInspector.View");
-
-        for (var i = 0; i < extensions.length; ++i) {
-            var descriptor = extensions[i].descriptor();
-            if (descriptor["location"] !== "elements-panel")
-                continue;
-
-            var title = WebInspector.UIString(descriptor["title"]);
-            extensions[i].instancePromise().then(addSidebarView.bind(this, title));
-        }
-
-        /**
-         * @param {string} title
-         * @param {!Object} object
-         * @this {WebInspector.ElementsPanel}
-         */
-        function addSidebarView(title, object)
-        {
-            var view = /** @type {!WebInspector.View} */ (object);
-            this._elementsSidebarViews.push(view);
-
-            if (this.sidebarPaneView)
-                this.sidebarPaneView.addPane(view);
-        }
-    },
-
     /**
      * @override
      * @param {!WebInspector.Target} target
@@ -279,11 +253,11 @@ WebInspector.ElementsPanel.prototype = {
 
     /**
      * @override
-     * @return {!Element}
      */
-    defaultFocusedElement: function()
+    focus: function()
     {
-        return this._treeOutlines.length ? this._treeOutlines[0].element : this.element;
+        if (this._treeOutlines.length)
+            this._treeOutlines[0].focus();
     },
 
     /**
@@ -318,7 +292,7 @@ WebInspector.ElementsPanel.prototype = {
                 else
                     treeOutline.domModel().requestDocument();
         }
-
+        this.focus();
     },
 
     willHide: function()
@@ -759,7 +733,7 @@ WebInspector.ElementsPanel.prototype = {
         if (!treeOutline.editing()) {
             handleUndoRedo.call(null, treeOutline);
             if (event.handled) {
-                this.sidebarPanes.styles.forceUpdate();
+                this._stylesWidget.forceUpdate();
                 return;
             }
         }
@@ -855,32 +829,28 @@ WebInspector.ElementsPanel.prototype = {
         if (this.sidebarPaneView && horizontally === !this._splitWidget.isVertical())
             return;
 
-        if (this.sidebarPaneView && this.sidebarPaneView.shouldHideOnDetach())
+        if (this.sidebarPaneView && this.sidebarPaneView.tabbedPane().shouldHideOnDetach())
             return; // We can't reparent extension iframes.
-
-        var selectedTabId = this.sidebarPaneView ? this.sidebarPaneView.selectedTabId : null;
 
         var extensionSidebarPanes = WebInspector.extensionServer.sidebarPanes();
         if (this.sidebarPaneView) {
-            this.sidebarPaneView.detach();
-            this._splitWidget.uninstallResizer(this.sidebarPaneView.headerElement());
+            this.sidebarPaneView.tabbedPane().detach();
+            this._splitWidget.uninstallResizer(this.sidebarPaneView.tabbedPane().headerElement());
         }
 
         this._splitWidget.setVertical(!horizontally);
         this.showToolbarPane(null);
-
-        var computedPane = new WebInspector.View(WebInspector.UIString("Computed"));
-        computedPane.element.classList.add("composite");
-        computedPane.element.classList.add("fill");
-        computedPane.element.classList.add("metrics-and-computed");
 
         var matchedStylesContainer = new WebInspector.VBox();
         matchedStylesContainer.element.appendChild(this._stylesSidebarToolbar);
         var matchedStylePanesWrapper = new WebInspector.VBox();
         matchedStylePanesWrapper.element.classList.add("style-panes-wrapper");
         matchedStylePanesWrapper.show(matchedStylesContainer.element);
+        this._stylesWidget.show(matchedStylePanesWrapper.element);
+
         var computedStylePanesWrapper = new WebInspector.VBox();
         computedStylePanesWrapper.element.classList.add("style-panes-wrapper");
+        this._computedStyleWidget.show(computedStylePanesWrapper.element);
 
         /**
          * @param {boolean} inComputedStyle
@@ -889,9 +859,9 @@ WebInspector.ElementsPanel.prototype = {
         function showMetrics(inComputedStyle)
         {
             if (inComputedStyle)
-                this.sidebarPanes.metrics.show(computedStylePanesWrapper.element, this.sidebarPanes.computedStyle.element);
+                this._metricsWidget.show(computedStylePanesWrapper.element, this._computedStyleWidget.element);
             else
-                this.sidebarPanes.metrics.show(matchedStylePanesWrapper.element);
+                this._metricsWidget.show(matchedStylePanesWrapper.element);
         }
 
         /**
@@ -907,60 +877,52 @@ WebInspector.ElementsPanel.prototype = {
                 showMetrics.call(this, false);
         }
 
-        this.sidebarPaneView = new WebInspector.SidebarTabbedPane();
-        this.sidebarPaneView.element.addEventListener("contextmenu", this._sidebarContextMenuEventFired.bind(this), false);
+        this.sidebarPaneView = WebInspector.viewManager.createTabbedLocation(() => WebInspector.inspectorView.setCurrentPanel(this));
+        var tabbedPane = this.sidebarPaneView.tabbedPane();
+        tabbedPane.element.addEventListener("contextmenu", this._sidebarContextMenuEventFired.bind(this), false);
         if (this._popoverHelper)
             this._popoverHelper.hidePopover();
-        this._popoverHelper = new WebInspector.PopoverHelper(this.sidebarPaneView.element, this._getPopoverAnchor.bind(this), this._showPopover.bind(this));
+        this._popoverHelper = new WebInspector.PopoverHelper(tabbedPane.element, this._getPopoverAnchor.bind(this), this._showPopover.bind(this));
         this._popoverHelper.setTimeout(0);
 
         if (horizontally) {
-            this._splitWidget.installResizer(this.sidebarPaneView.headerElement());
+            // Styles and computed are merged into a single tab.
+            this._splitWidget.installResizer(tabbedPane.headerElement());
 
-            var compositePane = new WebInspector.View(WebInspector.UIString("Styles"));
-            compositePane.element.classList.add("composite");
-            compositePane.element.classList.add("fill");
+            var stylesView = new WebInspector.SimpleView(WebInspector.UIString("Styles"));
+            stylesView.element.classList.add("flex-auto");
 
             var splitWidget = new WebInspector.SplitWidget(true, true, "stylesPaneSplitViewState", 215);
-            splitWidget.show(compositePane.element);
+            splitWidget.show(stylesView.element);
 
             splitWidget.setMainWidget(matchedStylesContainer);
             splitWidget.setSidebarWidget(computedStylePanesWrapper);
 
-            computedPane.show(computedStylePanesWrapper.element);
-            this.sidebarPaneView.addPane(compositePane);
+            this.sidebarPaneView.appendView(stylesView);
+            this._stylesViewToReveal = stylesView;
         } else {
-            var stylesPane = new WebInspector.View(WebInspector.UIString("Styles"));
-            stylesPane.element.classList.add("composite", "fill", "metrics-and-styles");
+            // Styles and computed are in separate tabs.
+            var stylesView = new WebInspector.SimpleView(WebInspector.UIString("Styles"));
+            stylesView.element.classList.add("flex-auto", "metrics-and-styles");
+            matchedStylesContainer.show(stylesView.element);
 
-            matchedStylesContainer.show(stylesPane.element);
-            computedStylePanesWrapper.show(computedPane.element);
+            var computedView = new WebInspector.SimpleView(WebInspector.UIString("Computed"));
+            computedView.element.classList.add("composite", "fill", "metrics-and-computed");
+            computedStylePanesWrapper.show(computedView.element);
 
-            this.sidebarPaneView.addEventListener(WebInspector.TabbedPane.EventTypes.TabSelected, tabSelected, this);
-            this.sidebarPaneView.addPane(stylesPane);
-            this.sidebarPaneView.addPane(computedPane);
+            tabbedPane.addEventListener(WebInspector.TabbedPane.EventTypes.TabSelected, tabSelected, this);
+            this.sidebarPaneView.appendView(stylesView);
+            this.sidebarPaneView.appendView(computedView);
+            this._stylesViewToReveal = stylesView;
         }
 
-        this.sidebarPanes.styles.show(matchedStylePanesWrapper.element);
-        this.sidebarPanes.computedStyle.show(computedStylePanesWrapper.element);
         showMetrics.call(this, horizontally);
 
-        this.sidebarPaneView.addPane(this.sidebarPanes.eventListeners);
-        this.sidebarPaneView.addPane(this.sidebarPanes.domBreakpoints);
-        this.sidebarPaneView.addPane(this.sidebarPanes.properties);
-
-        for (var sidebarViewWrapper of this._elementsSidebarViews)
-            this.sidebarPaneView.addPane(sidebarViewWrapper);
-
-        this._extensionSidebarPanesContainer = this.sidebarPaneView;
-
+        this.sidebarPaneView.appendApplicableItems("elements-sidebar");
         for (var i = 0; i < extensionSidebarPanes.length; ++i)
             this._addExtensionSidebarPane(extensionSidebarPanes[i]);
 
-        this._splitWidget.setSidebarWidget(this.sidebarPaneView);
-
-        if (selectedTabId)
-            this.sidebarPaneView.selectTab(selectedTabId);
+        this._splitWidget.setSidebarWidget(this.sidebarPaneView.tabbedPane());
     },
 
     /**
@@ -978,7 +940,7 @@ WebInspector.ElementsPanel.prototype = {
     _addExtensionSidebarPane: function(pane)
     {
         if (pane.panelName() === this.name)
-            this._extensionSidebarPanesContainer.addPane(pane);
+            this.sidebarPaneView.appendView(pane);
     },
 
     __proto__: WebInspector.Panel.prototype
@@ -1108,28 +1070,7 @@ WebInspector.ElementsPanel.show = function()
  */
 WebInspector.ElementsPanel.instance = function()
 {
-    if (!WebInspector.ElementsPanel._instanceObject)
-        WebInspector.ElementsPanel._instanceObject = new WebInspector.ElementsPanel();
-    return WebInspector.ElementsPanel._instanceObject;
-}
-
-/**
- * @constructor
- * @implements {WebInspector.PanelFactory}
- */
-WebInspector.ElementsPanelFactory = function()
-{
-}
-
-WebInspector.ElementsPanelFactory.prototype = {
-    /**
-     * @override
-     * @return {!WebInspector.Panel}
-     */
-    createPanel: function()
-    {
-        return WebInspector.ElementsPanel.instance();
-    }
+    return /** @type {!WebInspector.ElementsPanel} */ (self.runtime.sharedInstance(WebInspector.ElementsPanel));
 }
 
 /**

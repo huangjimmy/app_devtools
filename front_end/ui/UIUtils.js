@@ -743,14 +743,6 @@ WebInspector.asyncStackTraceLabel = function(description)
 }
 
 /**
- * @return {string}
- */
-WebInspector.manageBlackboxingSettingsTabLabel = function()
-{
-    return WebInspector.UIString("Blackboxing");
-}
-
-/**
  * @param {!Element} element
  */
 WebInspector.installComponentRootStyles = function(element)
@@ -834,11 +826,11 @@ WebInspector._documentBlurred = function(document, event)
         WebInspector.setCurrentFocusElement(null);
 }
 
-WebInspector._textInputTypes = ["text", "search", "tel", "url", "email", "password"].keySet();
+WebInspector._textInputTypes = new Set(["text", "search", "tel", "url", "email", "password"]);
 WebInspector._isTextEditingElement = function(element)
 {
     if (element instanceof HTMLInputElement)
-        return element.type in WebInspector._textInputTypes;
+        return WebInspector._textInputTypes.has(element.type);
 
     if (element instanceof HTMLTextAreaElement)
         return true;
@@ -1049,12 +1041,18 @@ WebInspector.revertDomChanges = function(domChanges)
  */
 WebInspector.measurePreferredSize = function(element, containerElement)
 {
+    var oldParent = element.parentElement;
+    var oldNextSibling = element.nextSibling;
     containerElement = containerElement || element.ownerDocument.body;
     containerElement.appendChild(element);
     element.positionAt(0, 0);
     var result = new Size(element.offsetWidth, element.offsetHeight);
+
     element.positionAt(undefined, undefined);
-    element.remove();
+    if (oldParent)
+        oldParent.insertBefore(element, oldNextSibling);
+    else
+        element.remove();
     return result;
 }
 
@@ -1278,8 +1276,6 @@ WebInspector.initializeUIUtils = function(document, themeSetting)
     var body = /** @type {!Element} */ (document.body);
     WebInspector.appendStyle(body, "ui/inspectorStyle.css");
     WebInspector.appendStyle(body, "ui/popover.css");
-    WebInspector.appendStyle(body, "ui/sidebarPane.css");
-
 }
 
 /**
@@ -1640,60 +1636,6 @@ WebInspector.bindInput = function(input, apply, validate, numeric)
 
 /**
  * @constructor
- */
-WebInspector.StringFormatter = function()
-{
-    this._processors = [];
-    this._regexes = [];
-}
-
-WebInspector.StringFormatter.prototype = {
-    /**
-     * @param {!RegExp} regex
-     * @param {function(string):!Node} handler
-     */
-    addProcessor: function(regex, handler)
-    {
-        this._regexes.push(regex);
-        this._processors.push(handler);
-    },
-
-    /**
-     * @param {string} text
-     * @return {!Node}
-     */
-    formatText: function(text)
-    {
-        return this._runProcessor(0, text);
-    },
-
-    /**
-     * @param {number} processorIndex
-     * @param {string} text
-     * @return {!Node}
-     */
-    _runProcessor: function(processorIndex, text)
-    {
-        if (processorIndex >= this._processors.length)
-            return createTextNode(text);
-
-        var container = createDocumentFragment();
-        var regex = this._regexes[processorIndex];
-        var processor = this._processors[processorIndex];
-
-        // Due to the nature of regex, |items| array has matched elements on its even indexes.
-        var items = text.replace(regex, "\0$1\0").split("\0");
-        for (var i = 0; i < items.length; ++i) {
-            var processedNode = i % 2 ? processor(items[i]) : this._runProcessor(processorIndex + 1, items[i]);
-            container.appendChild(processedNode);
-        }
-
-        return container;
-    }
-}
-
-/**
- * @constructor
  * @param {!WebInspector.Setting} setting
  */
 WebInspector.ThemeSupport = function(setting)
@@ -1871,10 +1813,9 @@ WebInspector.ThemeSupport.prototype = {
         if (name.indexOf("background") === -1)
             colorUsage |= WebInspector.ThemeSupport.ColorUsage.Foreground;
 
-        var colorRegex = /((?:rgb|hsl)a?\([^)]+\)|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|\b\w+\b(?!-))/g;
         output.push(name);
         output.push(":");
-        var items = value.replace(colorRegex, "\0$1\0").split("\0");
+        var items = value.replace(WebInspector.Color.Regex, "\0$1\0").split("\0");
         for (var i = 0; i < items.length; ++i)
             output.push(this.patchColor(items[i], colorUsage));
         if (style.getPropertyPriority(name))

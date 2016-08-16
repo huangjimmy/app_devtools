@@ -26,39 +26,50 @@
 
 /**
  * @constructor
- * @extends {WebInspector.View}
+ * @extends {WebInspector.VBox}
+ * @implements {WebInspector.ContextFlavorListener}
  */
 WebInspector.ScopeChainSidebarPane = function()
 {
-    WebInspector.View.call(this, WebInspector.UIString("Scope"));
+    WebInspector.VBox.call(this);
     this._expandController = new WebInspector.ObjectPropertiesSectionExpandController();
     this._linkifier = new WebInspector.Linkifier();
+    this._update();
 }
 
 WebInspector.ScopeChainSidebarPane._pathSymbol = Symbol("path");
 
 WebInspector.ScopeChainSidebarPane.prototype = {
     /**
-     * @param {?WebInspector.DebuggerModel.CallFrame} callFrame
+     * @override
+     * @param {?Object} object
      */
-    update: function(callFrame)
+    flavorChanged: function(object)
     {
+        this._update();
+    },
+
+    _update: function()
+    {
+        var callFrame = WebInspector.context.flavor(WebInspector.DebuggerModel.CallFrame);
+        var details = WebInspector.context.flavor(WebInspector.DebuggerPausedDetails);
         this._linkifier.reset();
         WebInspector.SourceMapNamesResolver.resolveThisObject(callFrame)
-            .then(this._innerUpdate.bind(this, callFrame));
+            .then(this._innerUpdate.bind(this, details, callFrame));
     },
 
     /**
+     * @param {?WebInspector.DebuggerPausedDetails} details
      * @param {?WebInspector.DebuggerModel.CallFrame} callFrame
      * @param {?WebInspector.RemoteObject} thisObject
      */
-    _innerUpdate: function(callFrame, thisObject)
+    _innerUpdate: function(details, callFrame, thisObject)
     {
         this.element.removeChildren();
 
-        if (!callFrame) {
+        if (!details || !callFrame) {
             var infoElement = createElement("div");
-            infoElement.className = "info";
+            infoElement.className = "gray-info-message";
             infoElement.textContent = WebInspector.UIString("Not Paused");
             this.element.appendChild(infoElement);
             return;
@@ -80,7 +91,6 @@ WebInspector.ScopeChainSidebarPane.prototype = {
                 if (thisObject)
                     extraProperties.push(new WebInspector.RemoteObjectProperty("this", thisObject));
                 if (i === 0) {
-                    var details = callFrame.debuggerModel.debuggerPausedDetails();
                     var exception = details.exception();
                     if (exception)
                         extraProperties.push(new WebInspector.RemoteObjectProperty(WebInspector.UIString.capitalize("Exception"), exception, undefined, undefined, undefined, undefined, undefined, true));
@@ -138,5 +148,5 @@ WebInspector.ScopeChainSidebarPane.prototype = {
 
     _sidebarPaneUpdatedForTest: function() { },
 
-    __proto__: WebInspector.View.prototype
+    __proto__: WebInspector.VBox.prototype
 }

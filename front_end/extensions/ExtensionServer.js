@@ -146,8 +146,10 @@ WebInspector.ExtensionServer.prototype = {
 
     _inspectedURLChanged: function(event)
     {
+        if (event.data !== WebInspector.targetManager.mainTarget())
+            return;
         this._requests = {};
-        var url = event.data;
+        var url = event.data.inspectedURL();
         this._postNotification(WebInspector.extensionAPI.Events.InspectedURLChanged, url);
     },
 
@@ -985,20 +987,20 @@ WebInspector.ExtensionServer.prototype = {
         if (!target)
             return;
 
-        target.runtimeAgent().evaluate(expression, "extension", exposeCommandLineAPI, true, contextId, returnByValue, false, false, onEvalute);
+        target.runtimeAgent().evaluate(expression, "extension", exposeCommandLineAPI, true, contextId, returnByValue, false, false, false, onEvalute);
 
         /**
          * @param {?Protocol.Error} error
          * @param {!RuntimeAgent.RemoteObject} result
-         * @param {boolean=} wasThrown
+         * @param {!RuntimeAgent.ExceptionDetails=} exceptionDetails
          */
-        function onEvalute(error, result, wasThrown)
+        function onEvalute(error, result, exceptionDetails)
         {
             if (error) {
-                callback(error, null, wasThrown);
+                callback(error, null, !!exceptionDetails);
                 return;
             }
-            callback(error, target.runtimeModel.createRemoteObject(result), wasThrown);
+            callback(error, target.runtimeModel.createRemoteObject(result), !!exceptionDetails);
         }
     },
 

@@ -815,7 +815,7 @@ WebInspector.ProfilesPanel.prototype = {
 
         this._profileViewToolbar.removeToolbarItems();
 
-        var toolbarItems = view.toolbarItems();
+        var toolbarItems = view.syncToolbarItems();
         for (var i = 0; i < toolbarItems.length; ++i)
             this._profileViewToolbar.appendToolbarItem(toolbarItems[i]);
 
@@ -1267,28 +1267,7 @@ WebInspector.ProfilesPanel.show = function()
  */
 WebInspector.ProfilesPanel._instance = function()
 {
-    if (!WebInspector.ProfilesPanel._instanceObject)
-        WebInspector.ProfilesPanel._instanceObject = new WebInspector.ProfilesPanel();
-    return WebInspector.ProfilesPanel._instanceObject;
-}
-
-/**
- * @constructor
- * @implements {WebInspector.PanelFactory}
- */
-WebInspector.ProfilesPanelFactory = function()
-{
-}
-
-WebInspector.ProfilesPanelFactory.prototype = {
-    /**
-     * @override
-     * @return {!WebInspector.Panel}
-     */
-    createPanel: function()
-    {
-        return WebInspector.ProfilesPanel._instance();
-    }
+    return /** @type {!WebInspector.ProfilesPanel} */ (self.runtime.sharedInstance(WebInspector.ProfilesPanel));
 }
 
 /**

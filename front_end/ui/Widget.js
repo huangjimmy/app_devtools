@@ -47,6 +47,7 @@ WebInspector.Widget = function(isWebComponent)
     this._children = [];
     this._hideOnDetach = false;
     this._notificationDepth = 0;
+    this._invalidationsSuspended = 0;
 }
 
 WebInspector.Widget.prototype = {
@@ -93,6 +94,8 @@ WebInspector.Widget.prototype = {
      */
     shouldHideOnDetach: function()
     {
+        if (!this.element.parentElement)
+            return false;
         if (this._hideOnDetach)
             return true;
         for (var child of this._children) {
@@ -205,70 +208,75 @@ WebInspector.Widget.prototype = {
     },
 
     /**
-     * @param {?Element} parentElement
+     * @param {!Element} parentElement
      * @param {?Element=} insertBefore
      */
     show: function(parentElement, insertBefore)
     {
-        this.attach(parentElement, insertBefore);
-        this.showWidget();
+        WebInspector.Widget.__assert(parentElement, "Attempt to attach widget with no parent element");
+
+        if (!this._isRoot) {
+            // Update widget hierarchy.
+            var currentParent = parentElement;
+            while (currentParent && !currentParent.__widget)
+                currentParent = currentParent.parentElementOrShadowHost();
+            WebInspector.Widget.__assert(currentParent, "Attempt to attach widget to orphan node");
+            this.attach(currentParent.__widget);
+        }
+
+        this.showWidget(parentElement, insertBefore);
     },
 
     /**
-     * @param {?Element} parentElement
+     * @param {!WebInspector.Widget} parentWidget
+     */
+    attach: function(parentWidget)
+    {
+        if (parentWidget === this._parentWidget)
+            return;
+        if (this._parentWidget)
+            this.detach();
+        this._parentWidget = parentWidget;
+        this._parentWidget._children.push(this);
+        this._isRoot = false;
+    },
+
+    /**
+     * @param {!Element} parentElement
      * @param {?Element=} insertBefore
      */
-    attach: function(parentElement, insertBefore)
+    showWidget: function(parentElement, insertBefore)
     {
-        WebInspector.Widget.__assert(parentElement, "Attempt to attach widget with no parent element");
-
-        // Update widget hierarchy.
         var currentParent = parentElement;
         while (currentParent && !currentParent.__widget)
             currentParent = currentParent.parentElementOrShadowHost();
-        var newParentWidget = currentParent ? currentParent.__widget : null;
 
-        if (this._parentWidget && newParentWidget !== this._parentWidget) {
-            // Reparent.
-            this.detach();
-        }
+        if (this._isRoot)
+            WebInspector.Widget.__assert(!currentParent, "Attempt to show root widget under another widget");
+        else
+            WebInspector.Widget.__assert(currentParent && currentParent.__widget === this._parentWidget, "Attempt to show under node belonging to alien widget");
 
-        if (newParentWidget) {
-            if (this._parentWidget !== newParentWidget) {
-                this._parentWidget = newParentWidget;
-                this._parentWidget._children.push(this);
-            }
-            this._isRoot = false;
-        } else {
-            WebInspector.Widget.__assert(this._isRoot, "Attempt to attach widget to orphan node");
-        }
-
-        this._parentElement = parentElement;
-        this._insertBeforeElement = insertBefore;
-    },
-
-    showWidget: function()
-    {
-        WebInspector.Widget.__assert(this._parentElement, "Attempt to show detached widget");
-        if (this._visible)
+        var wasVisible = this._visible;
+        if (wasVisible && this.element.parentElement === parentElement)
             return;
+
         this._visible = true;
 
-        if (this._parentIsShowing())
+        if (!wasVisible && this._parentIsShowing())
             this._processWillShow();
 
         this.element.classList.remove("hidden");
 
         // Reparent
-        if (this.element.parentElement !== this._parentElement) {
-            WebInspector.Widget._incrementWidgetCounter(this._parentElement, this.element);
-            if (this._insertBeforeElement)
-                WebInspector.Widget._originalInsertBefore.call(this._parentElement, this.element, this._insertBeforeElement);
+        if (this.element.parentElement !== parentElement) {
+            WebInspector.Widget._incrementWidgetCounter(parentElement, this.element);
+            if (insertBefore)
+                WebInspector.Widget._originalInsertBefore.call(parentElement, this.element, insertBefore);
             else
-                WebInspector.Widget._originalAppendChild.call(this._parentElement, this.element);
+                WebInspector.Widget._originalAppendChild.call(parentElement, this.element);
         }
 
-        if (this._parentIsShowing())
+        if (!wasVisible && this._parentIsShowing())
             this._processWasShown();
 
         if (this._parentWidget && this._hasNonZeroConstraints())
@@ -279,49 +287,45 @@ WebInspector.Widget.prototype = {
 
     hideWidget: function()
     {
+        if (!this._parentWidget)
+            return;
         this._hideWidget();
     },
 
     /**
      * @param {boolean=} overrideHideOnDetach
-     * @return {boolean}
      */
     _hideWidget: function(overrideHideOnDetach)
     {
-        WebInspector.Widget.__assert(this._parentElement, "Attempt to hide detached widget");
         if (!this._visible)
-            return false;
+            return;
         this._visible = false;
-        var parentElement = this._parentElement;
+        var parentElement = this.element.parentElement;
 
         if (this._parentIsShowing())
             this._processWillHide();
 
         if (!overrideHideOnDetach && this.shouldHideOnDetach()) {
             this.element.classList.add("hidden");
-            if (this._parentIsShowing())
-                this._processWasHidden();
-            if (this._parentWidget && this._hasNonZeroConstraints())
-                this._parentWidget.invalidateConstraints();
-            return true;
+        } else {
+            // Force legal removal
+            WebInspector.Widget._decrementWidgetCounter(parentElement, this.element);
+            WebInspector.Widget._originalRemoveChild.call(parentElement, this.element);
         }
-
-        // Force legal removal
-        WebInspector.Widget._decrementWidgetCounter(parentElement, this.element);
-        WebInspector.Widget._originalRemoveChild.call(parentElement, this.element);
 
         if (this._parentIsShowing())
             this._processWasHidden();
-        return true;
+        if (this._parentWidget && this._hasNonZeroConstraints())
+            this._parentWidget.invalidateConstraints();
     },
 
     detach: function()
     {
-        if (!this._parentWidget)
+        if (!this._parentWidget && !this._isRoot)
             return;
-        var wasShown = this._hideWidget(true);
-        if (!wasShown)
-            return;
+
+        if (this._visible)
+            this._hideWidget(true);
 
         // Update widget hierarchy.
         if (this._parentWidget) {
@@ -331,10 +335,6 @@ WebInspector.Widget.prototype = {
             this._parentWidget.childWasDetached(this);
             var parent = this._parentWidget;
             this._parentWidget = null;
-            this._parentElement = null;
-            this._insertBeforeElement = null;
-            if (this._hasNonZeroConstraints())
-                parent.invalidateConstraints();
         } else {
             WebInspector.Widget.__assert(this._isRoot, "Removing non-root widget from DOM");
         }
@@ -421,14 +421,6 @@ WebInspector.Widget.prototype = {
     },
 
     /**
-     * @return {!Element}
-     */
-    defaultFocusedElement: function()
-    {
-        return this._defaultFocusedElement || this.element;
-    },
-
-    /**
      * @param {!Element} element
      */
     setDefaultFocusedElement: function(element)
@@ -438,11 +430,14 @@ WebInspector.Widget.prototype = {
 
     focus: function()
     {
-        var element = this.defaultFocusedElement();
-        if (!element || element.isAncestor(this.element.ownerDocument.activeElement))
+        var element = this._defaultFocusedElement;
+        if (element && !element.isAncestor(this.element.ownerDocument.activeElement)) {
+            WebInspector.setCurrentFocusElement(element);
             return;
+        }
 
-        WebInspector.setCurrentFocusElement(element);
+        if (this._children.length)
+            this._children[0].focus();
     },
 
     /**
@@ -460,11 +455,18 @@ WebInspector.Widget.prototype = {
     measurePreferredSize: function()
     {
         var document = this.element.ownerDocument;
+        var oldParent = this.element.parentElement;
+        var oldNextSibling = this.element.nextSibling;
+
         WebInspector.Widget._originalAppendChild.call(document.body, this.element);
         this.element.positionAt(0, 0);
         var result = new Size(this.element.offsetWidth, this.element.offsetHeight);
+
         this.element.positionAt(undefined, undefined);
-        WebInspector.Widget._originalRemoveChild.call(document.body, this.element);
+        if (oldParent)
+            WebInspector.Widget._originalInsertBefore.call(oldParent, this.element, oldNextSibling);
+        else
+            WebInspector.Widget._originalRemoveChild.call(document.body, this.element);
         return result;
     },
 
@@ -519,8 +521,25 @@ WebInspector.Widget.prototype = {
         return !!(constraints.minimum.width || constraints.minimum.height || constraints.preferred.width || constraints.preferred.height);
     },
 
+    suspendInvalidations()
+    {
+        ++this._invalidationsSuspended;
+    },
+
+    resumeInvalidations()
+    {
+        --this._invalidationsSuspended;
+        if (!this._invalidationsSuspended && this._invalidationsRequested)
+            this.invalidateConstraints();
+    },
+
     invalidateConstraints: function()
     {
+        if (this._invalidationsSuspended) {
+            this._invalidationsRequested = true;
+            return;
+        }
+        this._invalidationsRequested = false;
         var cached = this._cachedConstraints;
         delete this._cachedConstraints;
         var actual = this.constraints();
@@ -667,91 +686,6 @@ WebInspector.VBoxWithResizeCallback.prototype = {
     onResize: function()
     {
         this._resizeCallback();
-    },
-
-    __proto__: WebInspector.VBox.prototype
-}
-
-/**
- * @constructor
- * @extends {WebInspector.VBox}
- * @param {string} title
- * @param {boolean=} isWebComponent
- */
-WebInspector.View = function(title, isWebComponent)
-{
-    WebInspector.VBox.call(this, isWebComponent);
-    this._title = title;
-    /** @type {!Array<!WebInspector.ToolbarItem>} */
-    this._toolbarItems = [];
-}
-
-WebInspector.View.prototype = {
-    /**
-     * @return {string}
-     */
-    title: function()
-    {
-        return this._title;
-    },
-
-    /**
-     * @param {function()} callback
-     */
-    setRevealCallback: function(callback)
-    {
-        this._revealCallback = callback;
-        if (this._setRevealRequested) {
-            callback();
-            delete this._setRevealRequested;
-        }
-    },
-
-    /**
-     * @param {function(boolean)} callback
-     */
-    setRequestVisibleCallback: function(callback)
-    {
-        this._requestVisibleCallback = callback;
-        if (this._setVisibleRequested !== undefined) {
-            callback(this._setVisibleRequested);
-            delete this._setVisibleRequested;
-        }
-    },
-
-    requestReveal: function()
-    {
-        if (this._revealCallback)
-            this._revealCallback();
-        else
-            this._setRevealRequested = true;
-    },
-
-    /**
-     * @param {boolean} visible
-     */
-    requestSetVisible: function(visible)
-    {
-        if (this._requestVisibleCallback)
-            this._requestVisibleCallback(visible);
-        else
-            this._setVisibleRequested = visible;
-    },
-
-    /**
-     * @param {!WebInspector.ToolbarItem} item
-     */
-    addToolbarItem: function(item)
-    {
-        this._toolbarItems.push(item);
-    },
-
-    /**
-     * @return {!Array<!WebInspector.ToolbarItem>}
-     */
-    toolbarItems: function()
-    {
-        return this._toolbarItems;
     },
 
     __proto__: WebInspector.VBox.prototype

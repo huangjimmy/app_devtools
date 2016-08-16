@@ -248,8 +248,11 @@ WebInspector.SecurityPanel.prototype = {
 
         this._target = target;
 
-        if (target.hasBrowserCapability())
+        if (target.hasBrowserCapability()) {
             target.resourceTreeModel.addEventListener(WebInspector.ResourceTreeModel.EventTypes.MainFrameNavigated, this._onMainFrameNavigated, this);
+            target.resourceTreeModel.addEventListener(WebInspector.ResourceTreeModel.EventTypes.InterstitialShown, this._onInterstitialShown, this);
+            target.resourceTreeModel.addEventListener(WebInspector.ResourceTreeModel.EventTypes.InterstitialHidden, this._onInterstitialHidden, this);
+        }
 
         var networkManager = WebInspector.NetworkManager.fromTarget(target);
         networkManager.addEventListener(WebInspector.NetworkManager.EventTypes.ResponseReceived, this._onResponseReceived, this);
@@ -267,30 +270,38 @@ WebInspector.SecurityPanel.prototype = {
     {
     },
 
-    _clearOrigins: function()
+    /**
+     * @param {!WebInspector.Event} event
+     */
+    _onMainFrameNavigated: function(event)
     {
+        var frame = /** type {!PageAgent.Frame}*/ (event.data);
+        var request = this._lastResponseReceivedForLoaderId.get(frame.loaderId);
+
         this.selectAndSwitchToMainView();
         this._sidebarTree.clearOrigins();
         this._origins.clear();
         this._lastResponseReceivedForLoaderId.clear();
         this._filterRequestCounts.clear();
-    },
-
-    /**
-     * @param {!WebInspector.Event} event
-     */
-    _onMainFrameNavigated: function(event) {
-
-        var frame = /** type {!PageAgent.Frame}*/ (event.data);
-        var request = this._lastResponseReceivedForLoaderId.get(frame.loaderId);
-        this._clearOrigins();
-
+        // After clearing the filtered request counts, refresh the
+        // explanations to reflect the new counts.
+        this._mainView.refreshExplanations();
 
         if (request) {
             var origin = WebInspector.ParsedURL.extractOrigin(request.url);
             this._sidebarTree.setMainOrigin(origin);
             this._processRequest(request);
         }
+    },
+
+    _onInterstitialShown: function()
+    {
+        this._sidebarTree.toggleOriginsList(true /* hidden */);
+    },
+
+    _onInterstitialHidden: function()
+    {
+        this._sidebarTree.toggleOriginsList(false /* hidden */);
     },
 
     __proto__: WebInspector.PanelWithSidebar.prototype
@@ -301,9 +312,7 @@ WebInspector.SecurityPanel.prototype = {
  */
 WebInspector.SecurityPanel._instance = function()
 {
-    if (!WebInspector.SecurityPanel._instanceObject)
-        WebInspector.SecurityPanel._instanceObject = new WebInspector.SecurityPanel();
-    return WebInspector.SecurityPanel._instanceObject;
+    return /** @type {!WebInspector.SecurityPanel} */ (self.runtime.sharedInstance(WebInspector.SecurityPanel));
 }
 
 /**
@@ -366,6 +375,19 @@ WebInspector.SecurityPanelSidebarTree = function(mainViewElement, showOriginInPa
 }
 
 WebInspector.SecurityPanelSidebarTree.prototype = {
+    /**
+     * @param {boolean} hidden
+     */
+    toggleOriginsList: function(hidden)
+    {
+        for (var key in WebInspector.SecurityPanelSidebarTree.OriginGroupName) {
+            var originGroupName = WebInspector.SecurityPanelSidebarTree.OriginGroupName[key];
+            var group = this._originGroups.get(originGroupName);
+            if (group)
+                group.hidden = hidden;
+        }
+    },
+
     /**
      * @param {!WebInspector.SecurityPanel.Origin} origin
      * @param {!SecurityAgent.SecurityState} securityState
@@ -522,25 +544,6 @@ WebInspector.SecurityPanelSidebarTreeElement.SecurityStateComparator = function(
 
 /**
  * @constructor
- * @implements {WebInspector.PanelFactory}
- */
-WebInspector.SecurityPanelFactory = function()
-{
-}
-
-WebInspector.SecurityPanelFactory.prototype = {
-    /**
-     * @override
-     * @return {!WebInspector.Panel}
-     */
-    createPanel: function()
-    {
-        return WebInspector.SecurityPanel._instance();
-    }
-}
-
-/**
- * @constructor
  * @extends {WebInspector.VBox}
  * @param {!WebInspector.SecurityPanel} panel
  */
@@ -566,9 +569,7 @@ WebInspector.SecurityMainView = function(panel)
 
     var lockSpectrum = this._summarySection.createChild("div", "lock-spectrum");
     lockSpectrum.createChild("div", "lock-icon lock-icon-secure").title = WebInspector.UIString("Secure");
-    lockSpectrum.createChild("div", "security-summary-lock-spacer");
     lockSpectrum.createChild("div", "lock-icon lock-icon-neutral").title = WebInspector.UIString("Not Secure");
-    lockSpectrum.createChild("div", "security-summary-lock-spacer");
     lockSpectrum.createChild("div", "lock-icon lock-icon-insecure").title = WebInspector.UIString("Insecure (Broken)");
 
     this._summarySection.createChild("div", "triangle-pointer-container").createChild("div", "triangle-pointer-wrapper").createChild("div", "triangle-pointer");
@@ -823,7 +824,6 @@ WebInspector.SecurityOriginView = function(panel, origin, originState)
             table.addRow(WebInspector.UIString("Valid From"), validFromString);
             table.addRow(WebInspector.UIString("Valid Until"), validUntilString);
             table.addRow(WebInspector.UIString("Issuer"), certificateDetails.issuer);
-            table.addRow(WebInspector.UIString("SCTs"), this.sctSummary(originState.securityDetails.certificateValidationDetails));
             table.addRow("", WebInspector.SecurityPanel.createCertificateViewerButton(WebInspector.UIString("Open full certificate details"), originState.securityDetails.certificateId));
 
             if (!originState.securityDetails.signedCertificateTimestampList.length)
@@ -949,26 +949,6 @@ WebInspector.SecurityOriginView.prototype = {
         }
 
         this._originLockIcon.classList.add("security-property-" + newSecurityState);
-    },
-
-    /**
-     * @constructor
-     * @param {?NetworkAgent.CertificateValidationDetails} details
-     * @return {string}
-     */
-    sctSummary: function(details)
-    {
-        if (!details)
-            return WebInspector.UIString("N/A");
-
-        var sctTypeList = [];
-        if (details.numValidScts)
-            sctTypeList.push(WebInspector.UIString("%d valid SCT%s", details.numValidScts, (details.numValidScts > 1) ? "s" : ""));
-        if (details.numInvalidScts)
-            sctTypeList.push(WebInspector.UIString("%d invalid SCT%s", details.numInvalidScts, (details.numInvalidScts > 1) ? "s" : ""));
-        if (details.numUnknownScts)
-            sctTypeList.push(WebInspector.UIString("%d SCT%s from unknown logs", details.numUnknownScts, (details.numUnknownScts > 1) ? "s" : ""));
-        return sctTypeList.length ? sctTypeList.join(", ") : WebInspector.UIString("0 SCTs");
     },
 
     __proto__: WebInspector.VBox.prototype

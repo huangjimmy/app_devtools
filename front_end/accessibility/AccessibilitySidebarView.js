@@ -4,14 +4,18 @@
 
 /**
  * @constructor
- * @extends {WebInspector.ThrottledView}
+ * @extends {WebInspector.ThrottledWidget}
  */
 WebInspector.AccessibilitySidebarView = function()
 {
-    WebInspector.ThrottledView.call(this, WebInspector.UIString("Accessibility"));
-    this._axNodeSubPane = null;
+    WebInspector.ThrottledWidget.call(this);
     this._node = null;
-    this._sidebarPaneStack = null;
+    this._sidebarPaneStack = WebInspector.viewManager.createStackLocation();
+    this._ariaSubPane = new WebInspector.ARIAAttributesPane();
+    this._sidebarPaneStack.showView(this._ariaSubPane);
+    this._axNodeSubPane = new WebInspector.AXNodeSubPane();
+    this._sidebarPaneStack.showView(this._axNodeSubPane);
+    this._sidebarPaneStack.widget().show(this.element);
     WebInspector.context.addFlavorChangeListener(WebInspector.DOMNode, this._pullNode, this);
     this._pullNode();
 }
@@ -51,18 +55,10 @@ WebInspector.AccessibilitySidebarView.prototype = {
      */
     wasShown: function()
     {
-        WebInspector.ThrottledView.prototype.wasShown.call(this);
+        WebInspector.ThrottledWidget.prototype.wasShown.call(this);
 
-        if (!this._sidebarPaneStack) {
-            this._axNodeSubPane = new WebInspector.AXNodeSubPane();
-            this._axNodeSubPane.setNode(this.node());
-            this._axNodeSubPane.show(this.element);
-
-            this._sidebarPaneStack = new WebInspector.SidebarPaneStack();
-            this._sidebarPaneStack.element.classList.add("flex-auto");
-            this._sidebarPaneStack.show(this.element);
-            this._sidebarPaneStack.addPane(this._axNodeSubPane);
-        }
+        this._axNodeSubPane.setNode(this.node());
+        this._ariaSubPane.setNode(this.node());
 
         WebInspector.targetManager.addModelListener(WebInspector.DOMModel, WebInspector.DOMModel.Events.AttrModified, this._onAttrChange, this);
         WebInspector.targetManager.addModelListener(WebInspector.DOMModel, WebInspector.DOMModel.Events.AttrRemoved, this._onAttrChange, this);
@@ -84,8 +80,8 @@ WebInspector.AccessibilitySidebarView.prototype = {
     _pullNode: function()
     {
         this._node = WebInspector.context.flavor(WebInspector.DOMNode);
-        if (this._axNodeSubPane)
-            this._axNodeSubPane.setNode(this._node);
+        this._ariaSubPane.setNode(this._node);
+        this._axNodeSubPane.setNode(this._node);
         this.update();
     },
 
@@ -116,17 +112,17 @@ WebInspector.AccessibilitySidebarView.prototype = {
     },
 
 
-    __proto__: WebInspector.ThrottledView.prototype
+    __proto__: WebInspector.ThrottledWidget.prototype
 };
 
 /**
  * @constructor
- * @extends {WebInspector.View}
+ * @extends {WebInspector.SimpleView}
  * @param {string} name
  */
 WebInspector.AccessibilitySubPane = function(name)
 {
-    WebInspector.View.call(this, name);
+    WebInspector.SimpleView.call(this, name);
 
     this._axNode = null;
     this.registerRequiredCSS("accessibility/accessibilityNode.css");
@@ -164,7 +160,7 @@ WebInspector.AccessibilitySubPane.prototype = {
      */
     createInfo: function(textContent, className)
     {
-        var classNameOrDefault = className || "info";
+        var classNameOrDefault = className || "gray-info-message";
         var info = this.element.createChild("div", classNameOrDefault);
         info.textContent = textContent;
         return info;
@@ -184,5 +180,5 @@ WebInspector.AccessibilitySubPane.prototype = {
         return treeOutline;
     },
 
-    __proto__: WebInspector.View.prototype
+    __proto__: WebInspector.SimpleView.prototype
 }

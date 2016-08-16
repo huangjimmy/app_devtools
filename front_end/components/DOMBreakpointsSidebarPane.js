@@ -31,10 +31,11 @@
 /**
  * @constructor
  * @extends {WebInspector.BreakpointsSidebarPaneBase}
+ * @implements {WebInspector.ContextFlavorListener}
  */
 WebInspector.DOMBreakpointsSidebarPane = function()
 {
-    WebInspector.BreakpointsSidebarPaneBase.call(this, WebInspector.UIString("DOM Breakpoints"));
+    WebInspector.BreakpointsSidebarPaneBase.call(this);
     this._domBreakpointsSetting = WebInspector.settings.createLocalSetting("domBreakpoints", []);
     this.listElement.classList.add("dom-breakpoints-list");
 
@@ -55,19 +56,20 @@ WebInspector.DOMBreakpointsSidebarPane = function()
     this._contextMenuLabels[this._breakpointTypes.AttributeModified] = WebInspector.UIString.capitalize("Attributes ^modifications");
     this._contextMenuLabels[this._breakpointTypes.NodeRemoved] = WebInspector.UIString.capitalize("Node ^removal");
 
-    WebInspector.targetManager.addEventListener(WebInspector.TargetManager.Events.InspectedURLChanged, this._inspectedURLChanged, this);
     WebInspector.targetManager.addModelListener(WebInspector.DOMModel, WebInspector.DOMModel.Events.NodeRemoved, this._nodeRemoved, this);
+    WebInspector.targetManager.addEventListener(WebInspector.TargetManager.Events.InspectedURLChanged, this._inspectedURLChanged, this);
+    this._inspectedURL = WebInspector.targetManager.inspectedURL();
+    this._update();
 }
 
 WebInspector.DOMBreakpointsSidebarPane.Marker = "breakpoint-marker";
 
 WebInspector.DOMBreakpointsSidebarPane.prototype = {
-    _inspectedURLChanged: function(event)
+    _inspectedURLChanged: function()
     {
         this._breakpointElements = {};
         this.reset();
-        var url = /** @type {string} */ (event.data);
-        this._inspectedURL = url.removeURLFragment();
+        this._inspectedURL = WebInspector.targetManager.inspectedURL();
     },
 
     /**
@@ -134,51 +136,28 @@ WebInspector.DOMBreakpointsSidebarPane.prototype = {
 
     /**
      * @param {!WebInspector.DebuggerPausedDetails} details
-     * @param {function(!Element)} callback
+     * @return {!Element}
      */
-    createBreakpointHitStatusMessage: function(details, callback)
+    createBreakpointHitStatusMessage: function(details)
     {
         var auxData = /** @type {!Object} */ (details.auxData);
+        var message = "Paused on a \"%s\" breakpoint.";
+        var substitutions = [];
+        substitutions.push(this._breakpointTypeLabels[auxData["type"]]);
+
         var domModel = WebInspector.DOMModel.fromTarget(details.target());
         if (!domModel)
-            return;
-        if (auxData.type === this._breakpointTypes.SubtreeModified) {
-            var targetNodeObject = details.target().runtimeModel.createRemoteObject(auxData["targetNode"]);
-            domModel.pushObjectAsNodeToFrontend(targetNodeObject, didPushNodeToFrontend.bind(this));
-        } else {
-            this._doCreateBreakpointHitStatusMessage(auxData, domModel.nodeForId(auxData.nodeId), null, callback);
-        }
+            return WebInspector.formatLocalized(message, substitutions);
 
-        /**
-         * @param {?WebInspector.DOMNode} targetNode
-         * @this {WebInspector.DOMBreakpointsSidebarPane}
-         */
-        function didPushNodeToFrontend(targetNode)
-        {
-            if (targetNode)
-                targetNodeObject.release();
-            this._doCreateBreakpointHitStatusMessage(auxData, domModel.nodeForId(auxData.nodeId), targetNode, callback);
-        }
-    },
-
-    /**
-     * @param {!Object} auxData
-     * @param {?WebInspector.DOMNode} node
-     * @param {?WebInspector.DOMNode} targetNode
-     * @param {function(!Element)} callback
-     */
-    _doCreateBreakpointHitStatusMessage: function(auxData, node, targetNode, callback)
-    {
-        var message;
-        var typeLabel = this._breakpointTypeLabels[auxData.type];
+        var node = domModel.nodeForId(auxData["nodeId"]);
         var linkifiedNode = WebInspector.DOMPresentationUtils.linkifyNodeReference(node);
-        var substitutions = [typeLabel, linkifiedNode];
-        var targetNodeLink = "";
-        if (targetNode)
-            targetNodeLink = WebInspector.DOMPresentationUtils.linkifyNodeReference(targetNode);
+        substitutions.push(linkifiedNode);
+
+        var targetNode = auxData["targetNodeId"] ? domModel.nodeForId(auxData["targetNodeId"]) : null;
+        var targetNodeLink = targetNode ? WebInspector.DOMPresentationUtils.linkifyNodeReference(targetNode) : "";
 
         if (auxData.type === this._breakpointTypes.SubtreeModified) {
-            if (auxData.insertion) {
+            if (auxData["insertion"]) {
                 if (targetNode !== node) {
                     message = "Paused on a \"%s\" breakpoint set on %s, because a new child was added to its descendant %s.";
                     substitutions.push(targetNodeLink);
@@ -188,12 +167,11 @@ WebInspector.DOMBreakpointsSidebarPane.prototype = {
                 message = "Paused on a \"%s\" breakpoint set on %s, because its descendant %s was removed.";
                 substitutions.push(targetNodeLink);
             }
-        } else
+        } else {
             message = "Paused on a \"%s\" breakpoint set on %s.";
+        }
 
-        var element = WebInspector.formatLocalized(message, substitutions);
-
-        callback(element);
+        return WebInspector.formatLocalized(message, substitutions);
     },
 
     _nodeRemoved: function(event)
@@ -342,23 +320,33 @@ WebInspector.DOMBreakpointsSidebarPane.prototype = {
         this._saveBreakpoints();
     },
 
-    highlightBreakpoint: function(auxData)
+    /**
+     * @override
+     * @param {?Object} object
+     */
+    flavorChanged: function(object)
     {
+        this._update();
+    },
+
+    _update: function()
+    {
+        var details = WebInspector.context.flavor(WebInspector.DebuggerPausedDetails);
+        if (!details || details.reason !== WebInspector.DebuggerModel.BreakReason.DOM) {
+            if (this._highlightedElement) {
+                this._highlightedElement.classList.remove("breakpoint-hit");
+                delete this._highlightedElement;
+            }
+            return;
+        }
+        var auxData = details.auxData;
         var breakpointId = this._createBreakpointId(auxData.nodeId, auxData.type);
         var element = this._breakpointElements[breakpointId];
         if (!element)
             return;
-        this.requestReveal();
+        WebInspector.viewManager.showView("sources.domBreakpoints");
         element.classList.add("breakpoint-hit");
         this._highlightedElement = element;
-    },
-
-    clearBreakpointHighlight: function()
-    {
-        if (this._highlightedElement) {
-            this._highlightedElement.classList.remove("breakpoint-hit");
-            delete this._highlightedElement;
-        }
     },
 
     /**
@@ -423,51 +411,29 @@ WebInspector.DOMBreakpointsSidebarPane.prototype = {
         }
     },
 
-    /**
-     * @param {!WebInspector.Panel} panel
-     * @return {!WebInspector.DOMBreakpointsSidebarPane.Proxy}
-     */
-    createProxy: function(panel)
-    {
-        var proxy = new WebInspector.DOMBreakpointsSidebarPane.Proxy(this, panel);
-        if (!this._proxies)
-            this._proxies = [];
-        this._proxies.push(proxy);
-        return proxy;
-    },
-
     __proto__: WebInspector.BreakpointsSidebarPaneBase.prototype
 }
 
 /**
  * @constructor
- * @extends {WebInspector.View}
- * @param {!WebInspector.DOMBreakpointsSidebarPane} pane
- * @param {!WebInspector.Panel} panel
+ * @extends {WebInspector.VBox}
  */
-WebInspector.DOMBreakpointsSidebarPane.Proxy = function(pane, panel)
+WebInspector.DOMBreakpointsSidebarPane.Proxy = function()
 {
-    WebInspector.View.call(this, WebInspector.UIString("DOM Breakpoints"));
+    WebInspector.VBox.call(this);
     this.registerRequiredCSS("components/breakpointsList.css");
-
-    this._wrappedPane = pane;
-    this._panel = panel;
 }
 
 WebInspector.DOMBreakpointsSidebarPane.Proxy.prototype = {
     wasShown: function()
     {
-        WebInspector.View.prototype.wasShown.call(this);
-        this._reattachBody();
+        WebInspector.SimpleView.prototype.wasShown.call(this);
+        var pane = WebInspector.domBreakpointsSidebarPane;
+        if (pane.element.parentNode !== this.element)
+            pane.show(this.element);
     },
 
-    _reattachBody: function()
-    {
-        if (this._wrappedPane.element.parentNode !== this.element)
-            this._wrappedPane.show(this.element);
-    },
-
-    __proto__: WebInspector.View.prototype
+    __proto__: WebInspector.VBox.prototype
 }
 
 /**

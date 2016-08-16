@@ -312,6 +312,7 @@ WebInspector.NetworkLogView.prototype = {
         this._dataGrid.element.addEventListener("mousedown", this._dataGridMouseDown.bind(this), true);
         this._dataGrid.element.addEventListener("mousemove", this._dataGridMouseMove.bind(this), true);
         this._dataGrid.element.addEventListener("mouseleave", this._highlightInitiatorChain.bind(this, null), true);
+        this._columns.sortByCurrentColumn();
     },
 
     /**
@@ -392,7 +393,7 @@ WebInspector.NetworkLogView.prototype = {
                 selectedRequestsNumber++;
                 selectedTransferSize += requestTransferSize;
             }
-            if (request.url === request.target().resourceTreeModel.inspectedPageURL() && request.resourceType() === WebInspector.resourceTypes.Document)
+            if (request.url === request.target().inspectedURL() && request.resourceType() === WebInspector.resourceTypes.Document)
                 baseTime = request.startTime;
             if (request.endTime > maxTime)
                 maxTime = request.endTime;
@@ -841,23 +842,32 @@ WebInspector.NetworkLogView.prototype = {
             InspectorFrontendHost.openInNewTab(url);
         }
 
+        contextMenu.appendApplicableItems(request);
+        var copyMenu = contextMenu.appendSubMenuItem(WebInspector.UIString("Copy"));
         if (request) {
-            contextMenu.appendApplicableItems(request);
+            copyMenu.appendItem(WebInspector.copyLinkAddressLabel(), InspectorFrontendHost.copyText.bind(InspectorFrontendHost, request.contentURL()));
+            copyMenu.appendSeparator();
+
             if (request.requestHeadersText())
-                contextMenu.appendItem(WebInspector.UIString.capitalize("Copy ^request ^headers"), this._copyRequestHeaders.bind(this, request));
+                copyMenu.appendItem(WebInspector.UIString.capitalize("Copy ^request ^headers"), this._copyRequestHeaders.bind(this, request));
             if (request.responseHeadersText)
-                contextMenu.appendItem(WebInspector.UIString.capitalize("Copy ^response ^headers"), this._copyResponseHeaders.bind(this, request));
+                copyMenu.appendItem(WebInspector.UIString.capitalize("Copy ^response ^headers"), this._copyResponseHeaders.bind(this, request));
             if (request.finished)
-                contextMenu.appendItem(WebInspector.UIString.capitalize("Copy ^response"), this._copyResponse.bind(this, request));
+                copyMenu.appendItem(WebInspector.UIString.capitalize("Copy ^response"), this._copyResponse.bind(this, request));
 
             if (WebInspector.isWin()) {
-                contextMenu.appendItem(WebInspector.UIString("Copy as cURL (cmd)"), this._copyCurlCommand.bind(this, request, "win"));
-                contextMenu.appendItem(WebInspector.UIString("Copy as cURL (bash)"), this._copyCurlCommand.bind(this, request, "unix"));
+                copyMenu.appendItem(WebInspector.UIString("Copy as cURL (cmd)"), this._copyCurlCommand.bind(this, request, "win"));
+                copyMenu.appendItem(WebInspector.UIString("Copy as cURL (bash)"), this._copyCurlCommand.bind(this, request, "unix"));
+                copyMenu.appendItem(WebInspector.UIString("Copy All as cURL (cmd)"), this._copyAllCurlCommand.bind(this, "win"));
+                copyMenu.appendItem(WebInspector.UIString("Copy All as cURL (bash)"), this._copyAllCurlCommand.bind(this, "unix"));
             } else {
-                contextMenu.appendItem(WebInspector.UIString("Copy as cURL"), this._copyCurlCommand.bind(this, request, "unix"));
+                copyMenu.appendItem(WebInspector.UIString("Copy as cURL"), this._copyCurlCommand.bind(this, request, "unix"));
+                copyMenu.appendItem(WebInspector.UIString("Copy All as cURL"), this._copyAllCurlCommand.bind(this, "unix"));
             }
+        } else {
+            copyMenu = contextMenu.appendSubMenuItem(WebInspector.UIString("Copy"));
         }
-        contextMenu.appendItem(WebInspector.UIString.capitalize("Copy ^all as HAR"), this._copyAll.bind(this));
+        copyMenu.appendItem(WebInspector.UIString.capitalize("Copy ^all as HAR"), this._copyAll.bind(this));
 
         contextMenu.appendSeparator();
         contextMenu.appendItem(WebInspector.UIString.capitalize("Save as HAR with ^content"), this._exportAll.bind(this));
@@ -883,7 +893,7 @@ WebInspector.NetworkLogView.prototype = {
                 var list = blockedSetting.get();
                 list.push(url);
                 blockedSetting.set(list);
-                WebInspector.inspectorView.showViewInDrawer("network.blocked-urls");
+                WebInspector.viewManager.showView("network.blocked-urls");
             }
         }
 
@@ -953,9 +963,25 @@ WebInspector.NetworkLogView.prototype = {
         InspectorFrontendHost.copyText(this._generateCurlCommand(request, platform));
     },
 
+    /**
+     * @param {string} platform
+     */
+    _copyAllCurlCommand: function(platform)
+    {
+        var requests = this._nodesByRequestId.valuesArray().map(node => node.request());
+        var commands = [];
+        for (var request of requests)
+            commands.push(this._generateCurlCommand(request, platform));
+        if (platform === "win")
+            InspectorFrontendHost.copyText(commands.join(" &\r\n"));
+        else
+            InspectorFrontendHost.copyText(commands.join(" ;\n"));
+    },
+
     _exportAll: function()
     {
-        var filename = WebInspector.targetManager.inspectedPageDomain() + ".har";
+        var url = WebInspector.targetManager.mainTarget().inspectedURL();
+        var filename = url.asParsedURL().host + ".har";
         var stream = new WebInspector.FileOutputStream();
         stream.open(filename, openCallback.bind(this));
 
@@ -995,7 +1021,9 @@ WebInspector.NetworkLogView.prototype = {
         var re = this._searchRegex;
         if (!re)
             return false;
-        return re.test(request.name()) || (this._networkLogLargeRowsSetting.get() && re.test(request.path()));
+
+        var text = this._networkLogLargeRowsSetting.get() ? request.path() + "/" + request.name() : request.name();
+        return re.test(text);
     },
 
     _clearSearchMatchedList: function()
@@ -1190,7 +1218,7 @@ WebInspector.NetworkLogView.prototype = {
             regex = this._textFilterUI.regex();
         }
 
-        var filter = WebInspector.NetworkLogView._requestNameOrPathFilter.bind(null, regex);
+        var filter = WebInspector.NetworkLogView._requestPathFilter.bind(null, regex);
         if (negative)
             filter = WebInspector.NetworkLogView._negativeFilter.bind(null, filter);
         return filter;
@@ -1363,24 +1391,39 @@ WebInspector.NetworkLogView.prototype = {
 
         function escapeStringWin(str)
         {
-            /* Replace quote by double quote (but not by \") because it is
-               recognized by both cmd.exe and MS Crt arguments parser.
+            /* If there are no new line characters do not escape the " characters
+               since it only uglifies the command.
 
-               Replace % by "%" because it could be expanded to an environment
-               variable value. So %% becomes "%""%". Even if an env variable ""
-               (2 doublequotes) is declared, the cmd.exe will not
-               substitute it with its value.
+               Because cmd.exe parser and MS Crt arguments parsers use some of the
+               same escape characters, they can interact with each other in
+               horrible ways, the order of operations is critical.
 
-               Replace each backslash with double backslash to make sure
-               MS Crt arguments parser won't collapse them.
+               Replace \ with \\ first because it is an escape character for certain
+               conditions in both parsers.
 
-               Replace new line outside of quotes since cmd.exe doesn't let
-               to do it inside.
+               Replace all " with \" to ensure the first parser does not remove it.
+
+               Then escape all characters we are not sure about with ^ to ensure it
+               gets to MS Crt parser safely.
+
+               The % character is special because MS Crt parser will try and look for
+               ENV variables and fill them in it's place. We cannot escape them with %
+               and cannot escape them with ^ (because it's cmd.exe's escape not MS Crt
+               parser); So we can get cmd.exe parser to escape the character after it,
+               if it is followed by a valid beginning character of an ENV variable.
+               This ensures we do not try and double escape another ^ if it was placed
+               by the previous replace.
+
+               Lastly we replace new lines with ^ and TWO new lines because the first
+               new line is there to enact the escape command the second is the character
+               to escape (in this case new line).
             */
-            return "\"" + str.replace(/"/g, "\"\"")
-                             .replace(/%/g, "\"%\"")
-                             .replace(/\\/g, "\\\\")
-                             .replace(/[\r\n]+/g, "\"^$&\"") + "\"";
+            var encapsChars = /[\r\n]/.test(str) ? "^\"" : "\"";
+            return encapsChars + str.replace(/\\/g, "\\\\")
+                             .replace(/"/g, "\\\"")
+                             .replace(/[^a-zA-Z0-9\s_\-:=+~'\/.',?;()*`]/g, "^$&")
+                             .replace(/%(?=[a-zA-Z0-9_])/g, "%^")
+                             .replace(/\r\n|[\n\r]/g, "^\n\n") + encapsChars;
         }
 
         function escapeStringPosix(str)
@@ -1473,11 +1516,12 @@ WebInspector.NetworkLogView._negativeFilter = function(filter, request)
  * @param {!WebInspector.NetworkRequest} request
  * @return {boolean}
  */
-WebInspector.NetworkLogView._requestNameOrPathFilter = function(regex, request)
+WebInspector.NetworkLogView._requestPathFilter = function(regex, request)
 {
     if (!regex)
         return false;
-    return regex.test(request.name()) || regex.test(request.path());
+
+    return regex.test(request.path() + "/" + request.name());
 }
 
 /**

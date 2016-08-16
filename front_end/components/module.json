@@ -10,7 +10,7 @@
         },
         {
             "type": "@WebInspector.DOMPresentationUtils.MarkerDecorator",
-            "className": "WebInspector.DOMPresentationUtils.GenericDecorator",
+            "factoryName": "WebInspector.DOMPresentationUtils.GenericDecorator",
             "marker": "breakpoint-marker",
             "title": "DOM Breakpoint",
             "color": "rgb(105, 140, 254)"
@@ -38,8 +38,9 @@
             "tags": "device"
         },
         {
-            "type": "settings-view",
-            "name": "network-conditions",
+            "type": "view",
+            "location": "settings-view",
+            "id": "network-conditions",
             "title": "Throttling",
             "order": "35",
             "className": "WebInspector.NetworkConditionsSettingsTab",

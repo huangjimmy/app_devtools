@@ -38,7 +38,11 @@ WebInspector.UISourceCodeFrame = function(uiSourceCode)
 
     if (Runtime.experiments.isEnabled("sourceDiff"))
         this._diff = new WebInspector.SourceCodeDiff(uiSourceCode.requestOriginalContent(), this.textEditor);
-    this.textEditor.setAutocompleteDelegate(new WebInspector.SimpleAutocompleteDelegate());
+
+    /** @type {?WebInspector.AutocompleteConfig} */
+    this._autocompleteConfig = {isWordChar: WebInspector.TextUtils.isWordChar};
+    WebInspector.moduleSetting("textEditorAutocompletion").addChangeListener(this._updateAutocomplete, this);
+    this._updateAutocomplete();
 
     this._rowMessageBuckets = {};
     /** @type {!Set<string>} */
@@ -195,6 +199,20 @@ WebInspector.UISourceCodeFrame.prototype = {
     {
     },
 
+    _updateAutocomplete: function()
+    {
+        this._textEditor.configureAutocomplete(WebInspector.moduleSetting("textEditorAutocompletion").get() ? this._autocompleteConfig : null);
+    },
+
+    /**
+     * @param {?WebInspector.AutocompleteConfig} config
+     */
+    configureAutocomplete: function(config)
+    {
+        this._autocompleteConfig = config;
+        this._updateAutocomplete();
+    },
+
     /**
      * @param {string} content
      */
@@ -224,7 +242,6 @@ WebInspector.UISourceCodeFrame.prototype = {
         {
             contextMenu.appendApplicableItems(this._uiSourceCode);
             contextMenu.appendApplicableItems(new WebInspector.UILocation(this._uiSourceCode, lineNumber, columnNumber));
-            contextMenu.appendSeparator();
         }
 
         return WebInspector.SourceFrame.prototype.populateTextAreaContextMenu.call(this, contextMenu, lineNumber, columnNumber)
@@ -249,6 +266,7 @@ WebInspector.UISourceCodeFrame.prototype = {
     dispose: function()
     {
         this._textEditor.dispose();
+        WebInspector.moduleSetting("textEditorAutocompletion").removeChangeListener(this._updateAutocomplete, this);
         this.detach();
     },
 
@@ -385,7 +403,7 @@ WebInspector.UISourceCodeFrame.prototype = {
         if (this._typeDecorationsPending.has(type))
             return;
         this._typeDecorationsPending.add(type);
-        self.runtime.extensions(WebInspector.UISourceCodeFrame.LineDecorator).find(extension => extension.descriptor()["decoratorType"] === type).instancePromise().then(decorator => {
+        self.runtime.extensions(WebInspector.UISourceCodeFrame.LineDecorator).find(extension => extension.descriptor()["decoratorType"] === type).instance().then(decorator => {
             this._typeDecorationsPending.delete(type);
             decorator.decorate(this.uiSourceCode(), this._textEditor);
         });

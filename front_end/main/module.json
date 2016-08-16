@@ -222,12 +222,16 @@
         },
         {
             "type": "setting",
-            "category": "",
+            "category": "Debugger",
             "title": "Disable JavaScript",
             "settingName": "javaScriptDisabled",
             "settingType": "boolean",
             "order": 1,
-            "defaultValue": false
+            "defaultValue": false,
+            "options": [
+                { "value": true, "title": "Disable JavaScript" },
+                { "value": false, "title": "Enable JavaScript" }
+            ]
         },
         {
             "type": "setting",
@@ -319,8 +323,9 @@
             "order": 80
         },
         {
-            "type": "drawer-view",
-            "name": "rendering",
+            "type": "view",
+            "location": "drawer-view",
+            "id": "rendering",
             "title": "Rendering",
             "persistence": "closeable",
             "order": 50,
@@ -337,6 +342,11 @@
                 { "value": "bottom", "title": "Dock to bottom" },
                 { "value": "undocked", "title": "Undock into separate window" }
             ]
+        },
+        {
+            "type": "@WebInspector.ViewLocationResolver",
+            "name": "drawer-view",
+            "className": "WebInspector.InspectorView"
         }
     ],
     "dependencies": [

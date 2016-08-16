@@ -115,7 +115,8 @@ WebInspector.RuntimeModel.prototype = {
         if (context.name === WebInspector.RuntimeModel._privateScript && !context.origin && !Runtime.experiments.isEnabled("privateScriptInspection")) {
             return;
         }
-        var executionContext = new WebInspector.ExecutionContext(this.target(), context.id, context.name, context.origin, context.isDefault, context.frameId);
+        var data = context.auxData || { isDefault: true };
+        var executionContext = new WebInspector.ExecutionContext(this.target(), context.id, context.name, context.origin, data["isDefault"], data["frameId"]);
         this._executionContextById.set(executionContext.id, executionContext);
         this.dispatchEventToListeners(WebInspector.RuntimeModel.Events.ExecutionContextCreated, executionContext);
     },
@@ -150,7 +151,7 @@ WebInspector.RuntimeModel.prototype = {
     createRemoteObject: function(payload)
     {
         console.assert(typeof payload === "object", "Remote object payload should only be an object");
-        return new WebInspector.RemoteObjectImpl(this.target(), payload.objectId, payload.type, payload.subtype, payload.value, payload.description, payload.preview, payload.customPreview);
+        return new WebInspector.RemoteObjectImpl(this.target(), payload.objectId, payload.type, payload.subtype, payload.value, payload.unserializableValue, payload.description, payload.preview, payload.customPreview);
     },
 
     /**
@@ -160,16 +161,31 @@ WebInspector.RuntimeModel.prototype = {
      */
     createScopeRemoteObject: function(payload, scopeRef)
     {
-        return new WebInspector.ScopeRemoteObject(this.target(), payload.objectId, scopeRef, payload.type, payload.subtype, payload.value, payload.description, payload.preview);
+        return new WebInspector.ScopeRemoteObject(this.target(), payload.objectId, scopeRef, payload.type, payload.subtype, payload.value, payload.unserializableValue, payload.description, payload.preview);
     },
 
     /**
-     * @param {number|string|boolean} value
+     * @param {number|string|boolean|undefined} value
      * @return {!WebInspector.RemoteObject}
      */
     createRemoteObjectFromPrimitiveValue: function(value)
     {
-        return new WebInspector.RemoteObjectImpl(this.target(), undefined, typeof value, undefined, value);
+        var type = typeof value;
+        var unserializableValue = undefined;
+        if (typeof value === "number") {
+            var description = String(value);
+            if (value === 0 && 1 / value < 0)
+                unserializableValue = RuntimeAgent.UnserializableValue.Negative0;
+            if (description === "NaN")
+                unserializableValue = RuntimeAgent.UnserializableValue.NaN;
+            if (description === "Infinity")
+                unserializableValue = RuntimeAgent.UnserializableValue.Infinity;
+            if (description === "-Infinity")
+                unserializableValue = RuntimeAgent.UnserializableValue.NegativeInfinity;
+            if (typeof unserializableValue !== "undefined")
+                value = undefined;
+        }
+        return new WebInspector.RemoteObjectImpl(this.target(), undefined, type, undefined, value, unserializableValue);
     },
 
     /**
@@ -229,16 +245,19 @@ WebInspector.RuntimeModel.prototype = {
      * @param {string=} objectGroup
      * @param {boolean=} doNotPauseOnExceptionsAndMuteConsole
      * @param {boolean=} includeCommandLineAPI
+     * @param {boolean=} returnByValue
+     * @param {boolean=} generatePreview
+     * @param {boolean=} awaitPromise
      * @param {function(?RuntimeAgent.RemoteObject, ?RuntimeAgent.ExceptionDetails=)=} callback
      */
-    runScript: function(scriptId, executionContextId, objectGroup, doNotPauseOnExceptionsAndMuteConsole, includeCommandLineAPI, callback)
+    runScript: function(scriptId, executionContextId, objectGroup, doNotPauseOnExceptionsAndMuteConsole, includeCommandLineAPI, returnByValue, generatePreview, awaitPromise, callback)
     {
-        this._agent.runScript(scriptId, executionContextId, objectGroup, doNotPauseOnExceptionsAndMuteConsole, includeCommandLineAPI, innerCallback);
+        this._agent.runScript(scriptId, executionContextId, objectGroup, doNotPauseOnExceptionsAndMuteConsole, includeCommandLineAPI, returnByValue, generatePreview, awaitPromise, innerCallback);
 
         /**
          * @param {?Protocol.Error} error
-         * @param {?RuntimeAgent.RemoteObject} result
-         * @param {?RuntimeAgent.ExceptionDetails=} exceptionDetails
+         * @param {!RuntimeAgent.RemoteObject} result
+         * @param {!RuntimeAgent.ExceptionDetails=} exceptionDetails
          */
         function innerCallback(error, result, exceptionDetails)
         {
@@ -377,7 +396,7 @@ WebInspector.RuntimeDispatcher.prototype = {
             details.lineNumber,
             details.columnNumber,
             undefined,
-            exception ? ["Uncaught (in promise)", exception] : undefined,
+            exception ? [WebInspector.RemoteObject.fromLocalObject(details.text), exception] : undefined,
             details.stackTrace,
             timestamp,
             executionContextId,
@@ -532,7 +551,7 @@ WebInspector.ExecutionContext.prototype = {
      * @param {boolean} returnByValue
      * @param {boolean} generatePreview
      * @param {boolean} userGesture
-     * @param {function(?WebInspector.RemoteObject, boolean, ?RuntimeAgent.RemoteObject=, ?RuntimeAgent.ExceptionDetails=)} callback
+     * @param {function(?WebInspector.RemoteObject, !RuntimeAgent.ExceptionDetails=)} callback
      */
     evaluate: function(expression, objectGroup, includeCommandLineAPI, doNotPauseOnExceptionsAndMuteConsole, returnByValue, generatePreview, userGesture, callback)
     {
@@ -546,13 +565,12 @@ WebInspector.ExecutionContext.prototype = {
 
     /**
      * @param {string} objectGroup
-     * @param {boolean} returnByValue
      * @param {boolean} generatePreview
-     * @param {function(?WebInspector.RemoteObject, boolean, ?RuntimeAgent.RemoteObject=, ?RuntimeAgent.ExceptionDetails=)} callback
+     * @param {function(?WebInspector.RemoteObject, !RuntimeAgent.ExceptionDetails=)} callback
      */
-    globalObject: function(objectGroup, returnByValue, generatePreview, callback)
+    globalObject: function(objectGroup, generatePreview, callback)
     {
-        this._evaluateGlobal("this", objectGroup, false, true, returnByValue, generatePreview, false, callback);
+        this._evaluateGlobal("this", objectGroup, false, true, false, generatePreview, false, callback);
     },
 
     /**
@@ -563,7 +581,7 @@ WebInspector.ExecutionContext.prototype = {
      * @param {boolean} returnByValue
      * @param {boolean} generatePreview
      * @param {boolean} userGesture
-     * @param {function(?WebInspector.RemoteObject, boolean, ?RuntimeAgent.RemoteObject=, ?RuntimeAgent.ExceptionDetails=)} callback
+     * @param {function(?WebInspector.RemoteObject, !RuntimeAgent.ExceptionDetails=)} callback
      */
     _evaluateGlobal: function(expression, objectGroup, includeCommandLineAPI, doNotPauseOnExceptionsAndMuteConsole, returnByValue, generatePreview, userGesture, callback)
     {
@@ -576,34 +594,27 @@ WebInspector.ExecutionContext.prototype = {
          * @this {WebInspector.ExecutionContext}
          * @param {?Protocol.Error} error
          * @param {!RuntimeAgent.RemoteObject} result
-         * @param {boolean=} wasThrown
-         * @param {?RuntimeAgent.ExceptionDetails=} exceptionDetails
+         * @param {!RuntimeAgent.ExceptionDetails=} exceptionDetails
          */
-        function evalCallback(error, result, wasThrown, exceptionDetails)
+        function evalCallback(error, result, exceptionDetails)
         {
             if (error) {
                 console.error(error);
-                callback(null, false);
+                callback(null);
                 return;
             }
-
-            if (returnByValue)
-                callback(null, !!wasThrown, wasThrown ? null : result, exceptionDetails);
-            else
-                callback(this.runtimeModel.createRemoteObject(result), !!wasThrown, undefined, exceptionDetails);
+            callback(this.runtimeModel.createRemoteObject(result), exceptionDetails);
         }
-        this.target().runtimeAgent().evaluate(expression, objectGroup, includeCommandLineAPI, doNotPauseOnExceptionsAndMuteConsole, this.id, returnByValue, generatePreview, userGesture, evalCallback.bind(this));
+        this.target().runtimeAgent().evaluate(expression, objectGroup, includeCommandLineAPI, doNotPauseOnExceptionsAndMuteConsole, this.id, returnByValue, generatePreview, userGesture, false, evalCallback.bind(this));
     },
 
     /**
      * @param {string} expressionString
-     * @param {string} text
-     * @param {number} cursorOffset
      * @param {string} prefix
      * @param {boolean} force
      * @param {function(!Array.<string>, number=)} completionsReadyCallback
      */
-    completionsForExpression: function(expressionString, text, cursorOffset, prefix, force, completionsReadyCallback)
+    completionsForExpression: function(expressionString, prefix, force, completionsReadyCallback)
     {
         var lastIndex = expressionString.length - 1;
 
@@ -630,11 +641,13 @@ WebInspector.ExecutionContext.prototype = {
             this.evaluate(expressionString, "completion", true, true, false, false, false, evaluated.bind(this));
 
         /**
+         * @param {?WebInspector.RemoteObject} result
+         * @param {!RuntimeAgent.ExceptionDetails=} exceptionDetails
          * @this {WebInspector.ExecutionContext}
          */
-        function evaluated(result, wasThrown)
+        function evaluated(result, exceptionDetails)
         {
-            if (!result || wasThrown) {
+            if (!result || !!exceptionDetails) {
                 completionsReadyCallback([]);
                 return;
             }
@@ -684,7 +697,7 @@ WebInspector.ExecutionContext.prototype = {
                 var resultSet = {};
                 try {
                     for (var o = object; o; o = Object.getPrototypeOf(o)) {
-                        if (type === "array" && o === object && ArrayBuffer.isView(o) && o.length > 9999)
+                        if ((type === "array" || type === "typedarray") && o === object && ArrayBuffer.isView(o) && o.length > 9999)
                             continue;
                         var names = Object.getOwnPropertyNames(o);
                         var isArray = Array.isArray(o);
@@ -718,15 +731,14 @@ WebInspector.ExecutionContext.prototype = {
         }
 
         /**
-         * @param {?WebInspector.RemoteObject} notRelevant
-         * @param {boolean} wasThrown
-         * @param {?RuntimeAgent.RemoteObject=} result
+         * @param {?WebInspector.RemoteObject} result
+         * @param {!RuntimeAgent.ExceptionDetails=} exceptionDetails
          * @this {WebInspector.ExecutionContext}
          */
-        function receivedPropertyNamesFromEval(notRelevant, wasThrown, result)
+        function receivedPropertyNamesFromEval(result, exceptionDetails)
         {
             this.target().runtimeAgent().releaseObjectGroup("completion");
-            if (result && !wasThrown)
+            if (result && !exceptionDetails)
                 receivedPropertyNames.call(this, /** @type {!Object} */(result.value));
             else
                 completionsReadyCallback([]);

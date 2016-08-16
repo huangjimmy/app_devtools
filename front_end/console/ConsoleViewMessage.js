@@ -49,6 +49,7 @@ WebInspector.ConsoleViewMessage = function(consoleMessage, linkifier, nestingLev
     /** @type {!Object.<string, function(!WebInspector.RemoteObject, !Element, boolean=)>} */
     this._customFormatters = {
         "array": this._formatParameterAsArray,
+        "typedarray": this._formatParameterAsArray,
         "error": this._formatParameterAsError,
         "function": this._formatParameterAsFunction,
         "generator": this._formatParameterAsObject,
@@ -56,6 +57,7 @@ WebInspector.ConsoleViewMessage = function(consoleMessage, linkifier, nestingLev
         "map": this._formatParameterAsObject,
         "node": this._formatParameterAsNode,
         "object": this._formatParameterAsObject,
+        "promise": this._formatParameterAsObject,
         "proxy": this._formatParameterAsObject,
         "set": this._formatParameterAsObject,
         "string": this._formatParameterAsString
@@ -228,7 +230,7 @@ WebInspector.ConsoleViewMessage.prototype = {
             this._formattedMessage.insertBefore(this._anchorElement, this._formattedMessage.firstChild);
         }
 
-        var dumpStackTrace = !!consoleMessage.stackTrace && (consoleMessage.source === WebInspector.ConsoleMessage.MessageSource.Network || consoleMessage.level === WebInspector.ConsoleMessage.MessageLevel.Error || consoleMessage.level === WebInspector.ConsoleMessage.MessageLevel.RevokedError || consoleMessage.type === WebInspector.ConsoleMessage.MessageType.Trace);
+        var dumpStackTrace = !!consoleMessage.stackTrace && (consoleMessage.source === WebInspector.ConsoleMessage.MessageSource.Network || consoleMessage.level === WebInspector.ConsoleMessage.MessageLevel.Error || consoleMessage.level === WebInspector.ConsoleMessage.MessageLevel.RevokedError || consoleMessage.type === WebInspector.ConsoleMessage.MessageType.Trace || consoleMessage.level === WebInspector.ConsoleMessage.MessageLevel.Warning);
         if (dumpStackTrace) {
             var treeOutline = new TreeOutline();
             treeOutline.element.classList.add("outline-disclosure", "outline-disclosure-no-padding");
@@ -415,25 +417,10 @@ WebInspector.ConsoleViewMessage.prototype = {
             }
         }
 
-        var section = this._buildExpandableObjectSection(obj, titleElement);
-        elem.appendChild(section.element);
-    },
-
-    /**
-     * @param {!WebInspector.RemoteObject} obj
-     * @param {!Element} titleElement
-     * @return {!WebInspector.ObjectPropertiesSection}
-     */
-    _buildExpandableObjectSection: function(obj, titleElement)
-    {
-        var note = titleElement.createChild("span", "object-state-note");
-        note.classList.add("info-note");
-        note.title = WebInspector.UIString("Object value at left was snapshotted when logged, value below was evaluated just now.");
-
         var section = new WebInspector.ObjectPropertiesSection(obj, titleElement, this._linkifier);
         section.element.classList.add("console-view-object-properties-section");
         section.enableContextMenu();
-        return section;
+        elem.appendChild(section.element);
     },
 
     /**
@@ -699,7 +686,9 @@ WebInspector.ConsoleViewMessage.prototype = {
 
         titleElement.createTextChild("]");
 
-        var section = this._buildExpandableObjectSection(array, titleElement);
+        var section = new WebInspector.ObjectPropertiesSection(array, titleElement, this._linkifier);
+        section.element.classList.add("console-view-object-properties-section");
+        section.enableContextMenu();
         elem.appendChild(section.element);
     },
 
@@ -711,7 +700,7 @@ WebInspector.ConsoleViewMessage.prototype = {
     {
         if (this._message.type === WebInspector.ConsoleMessage.MessageType.DirXML) {
             // Prevent infinite expansion of cross-referencing arrays.
-            return this._formatParameter(output, output.subtype === "array", false);
+            return this._formatParameter(output, output.subtype === "array" || output.subtype === "typedarray", false);
         }
         return this._previewFormatter.renderPropertyPreview(output.type, output.subtype, output.description);
     },
@@ -813,8 +802,7 @@ WebInspector.ConsoleViewMessage.prototype = {
             buffer.setAttribute("style", obj.description);
             for (var i = 0; i < buffer.style.length; i++) {
                 var property = buffer.style[i];
-                var value = buffer.style.getPropertyValue(property);
-                if (!value.startsWith("url(") && isWhitelistedProperty(property))
+                if (isWhitelistedProperty(property))
                     currentStyle[property] = buffer.style[property];
             }
         }
